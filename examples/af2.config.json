@@ -1,0 +1,13 @@
+{
+  "data_dir": "/path/to/af2/parameters",
+  "output": "runs/af2",
+  "length": 32,
+  "recycles": 0,
+  "bfloat16": false,
+  "stage_steps": [
+    4,
+    4,
+    2
+  ],
+  "learning_rate": 0.05
+}

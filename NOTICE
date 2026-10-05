@@ -1,0 +1,28 @@
+Hallucination Lab
+Copyright 2026 Hallucination Lab contributors
+
+The internal AF3 adapter includes modified code from AlphaFold3 Hallucination
+(Copyright 2026 AlphaFold3 Hallucination Contributors, Apache-2.0), formerly
+published at https://github.com/Terry-Wang-Lynx/AlphaFold3-Hallucination.
+This is a source attribution, not an installation dependency. The adapted
+source is included in src/hallucination_lab/backends/_af3/.
+Changes include general design masks, caller-supplied objectives, explicit
+output capabilities, and a separate optimization engine.
+
+The AF3 Evoformer adapter derives from AlphaFold 3 (Google DeepMind,
+Apache-2.0), source b2f3d45fbfcacc5183bd5345d15df93571b8437f.
+https://github.com/google-deepmind/alphafold3
+Its parameter names and module structure are retained for compatibility.
+
+Sequence relaxation and the optional AF2 backend use ColabDesign semantics.
+ColabDesign, Sergey Ovchinnikov and contributors:
+"THE BEER-WARE LICENSE" (Revision 42):
+<so3@mit.edu> wrote this file. As long as you retain this notice you can do
+whatever you want with this stuff. If we meet some day, and you think this
+stuff is worth it, you can buy me a beer in return. Sergey Ovchinnikov
+https://github.com/sokrypton/ColabDesign
+
+No model parameters, databases, or third-party runtime installations are
+included. They are obtained separately and retain their own terms. AF3
+parameters and outputs have terms separate from the Apache-2.0 code license.
+This independent project is not affiliated with Google DeepMind.
