@@ -4,8 +4,8 @@ include CITATION.cff
 include LICENSE
 include MANIFEST.in
 include NOTICE
-include README.html
-include README.zh-CN.html
+include README.md
+include README.zh-CN.md
 include docs/api.html
 include docs/contributing.html
 include docs/guide.html
