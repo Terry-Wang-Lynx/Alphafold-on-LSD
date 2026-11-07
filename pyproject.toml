@@ -9,7 +9,7 @@ description = "Composable AF2 and AF3 protein hallucination research"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
-readme = {text = "Hallucination Lab: composable AF2 and AF3 protein hallucination research. The source distribution includes self-contained HTML documentation in docs/index.html, runnable examples, and numerical tests. Model runtimes and weights are installed separately.", content-type = "text/plain"}
+readme = {text = "AlphaFold on LSD: composable AF2 and AF3 protein hallucination research. The source distribution includes self-contained HTML documentation in docs/index.html, runnable examples, and numerical tests. Model runtimes and weights are installed separately.", content-type = "text/plain"}
 dependencies = ["numpy>=1.26"]
 classifiers = ["Development Status :: 4 - Beta", "Intended Audience :: Science/Research", "Programming Language :: Python :: 3", "Topic :: Scientific/Engineering :: Bio-Informatics"]
 

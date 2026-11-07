@@ -1,8 +1,8 @@
 cff-version: 1.2.0
 message: "Please cite the software version you use and its upstream models."
-title: "Hallucination Lab"
+title: "AlphaFold on LSD"
 type: software
 authors:
-  - name: "Hallucination Lab contributors"
+  - name: "AlphaFold on LSD contributors"
 version: "0.3.0rc3"
 license: Apache-2.0

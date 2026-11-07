@@ -2,7 +2,7 @@
 
 [Overview](docs/index.html) · [Install](docs/install.html) · [Use](docs/guide.html) · [API](docs/api.html) · [Numerics](docs/numerics.html) · [Migration](docs/migration.html) · [Attribution](docs/provenance.html) · [Contribute](docs/contributing.html)
 
-Hallucination Lab · 0.3.0rc3 · Release candidate
+AlphaFold on LSD · 0.3.0rc3 · Release candidate
 
 # Protein hallucination, open to customization.
 
