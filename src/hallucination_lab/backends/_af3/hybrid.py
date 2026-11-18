@@ -11,7 +11,7 @@ from alphafold3.model import model as af_model
 from alphafold3.model.components import mapping, utils
 from alphafold3.model.network import atom_cross_attention, confidence_head, diffusion_head, distogram_head
 from .trunk import WIDTH, DesignEvoformer
-from .features import recycle_embeddings
+from .features import native_r0_embeddings, recycle_embeddings
 
 class DetachedTemplateEvoformer(DesignEvoformer):
     """Preserve template forward context while explicitly detaching its increment."""
@@ -41,8 +41,10 @@ class _HybridEmbeddingModel(af_model.Model):
         self._template_gradient = bool(template_gradient)
 
     @hk.transparent
-    def _hybrid_embeddings(self, batch_dict, pseudo_full, profile_full, key):
+    def _hybrid_embeddings(self, batch_dict, pseudo_full, profile_full, key, *,
+                           atom_bank=None, atom_layout_logs=None):
         batch = feat_batch.Batch.from_data_dict(batch_dict)
+        soft_atoms = atom_bank is not None
         evo_cfg = self.config.evoformer
         global_config = self.global_config
         dtype = jnp.bfloat16 if global_config.bfloat16 == "all" else jnp.float32
@@ -55,20 +57,27 @@ class _HybridEmbeddingModel(af_model.Model):
             target_feat = jnp.concatenate(
                 [hybrid_aatype, hybrid_profile, batch.msa.deletion_mean[..., None]], axis=-1
             ).astype(dtype)
-            atom_encoding = atom_cross_attention.atom_cross_att_encoder(
-                token_atoms_act=None,
-                trunk_single_cond=None,
-                trunk_pair_cond=None,
-                config=evo_cfg.per_atom_conditioning,
-                global_config=global_config,
-                batch=batch,
-                name="evoformer_conditioning",
-            )
+            if soft_atoms:
+                from .soft_atom import soft_atom_token_act
+                atom_token = soft_atom_token_act(
+                    atom_bank, atom_layout_logs, evo_cfg.per_atom_conditioning, global_config,
+                )
+            else:
+                atom_token = atom_cross_attention.atom_cross_att_encoder(
+                    token_atoms_act=None,
+                    trunk_single_cond=None,
+                    trunk_pair_cond=None,
+                    config=evo_cfg.per_atom_conditioning,
+                    global_config=global_config,
+                    batch=batch,
+                    name="evoformer_conditioning",
+                ).token_act
             target_feat = jnp.concatenate(
-                [target_feat, atom_encoding.token_act], axis=-1
+                [target_feat, atom_token], axis=-1
             ).astype(dtype)
 
-        embedding_type = DesignEvoformer if self._template_gradient else DetachedTemplateEvoformer
+        embedding_type = (DesignEvoformer if (self._template_gradient or soft_atoms)
+                          else DetachedTemplateEvoformer)
         embedding_module = embedding_type(
             evo_cfg,
             global_config,
@@ -76,6 +85,7 @@ class _HybridEmbeddingModel(af_model.Model):
             pseudo_full,
             self._design_mask,
             True,
+            query_only=soft_atoms,
         )
         prev = {
             "pair": jnp.zeros(
@@ -97,19 +107,26 @@ class _HybridEmbeddingModel(af_model.Model):
             }
             return embeddings, rng_key
 
-        embeddings = recycle_embeddings(
-            body, prev, key, self._num_design_recycles, detach=self._detach_recycles
-        )
+        if soft_atoms:
+            embeddings = native_r0_embeddings(body, prev, key)
+        else:
+            embeddings = recycle_embeddings(
+                body, prev, key, self._num_design_recycles, detach=self._detach_recycles
+            )
         return batch, embeddings
 
 
 class HybridDesignTrunk(_HybridEmbeddingModel):
     """Hybrid AF3 trunk returning only model-native distogram logits."""
 
-    def __call__(self, batch, pseudo_full, profile_full, key=None):
+    def __call__(self, batch, pseudo_full, profile_full, key=None, *,
+                 atom_bank=None, atom_layout_logs=None):
         if key is None:
             key = hk.next_rng_key()
-        batch_obj, embeddings = self._hybrid_embeddings(batch, pseudo_full, profile_full, key)
+        batch_obj, embeddings = self._hybrid_embeddings(
+            batch, pseudo_full, profile_full, key,
+            atom_bank=atom_bank, atom_layout_logs=atom_layout_logs,
+        )
         distogram = distogram_head.DistogramHead(
             self.config.heads.distogram, self.global_config
         )(batch_obj, embeddings, return_distogram=True)

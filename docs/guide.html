@@ -2,6 +2,39 @@
 python examples/make_af3_input.py --output example-input
 PYTHONPATH=examples hallulab run af3:build --config examples/af3.config.json</code></pre><p>Use the corresponding runtime's Python and CLI. First replace the parameter-directory placeholders in the configs. The AF3 preparation command writes only an artificial poly-alanine input and a synthetic mask; it does not run a predictor. Native JSON contains inline MSA/template data; external <code>*Path</code> references are rejected. Example schedules demonstrate the API and are not optimized design recipes.</p>
 <h2>Three explicit stages</h2><p><code>examples/stages.py</code> demonstrates a logits-to-soft ramp, a soft stage with a temperature ramp, and a hard straight-through stage. Change <code>stage_steps</code> and <code>learning_rate</code> in JSON, or write your own factory. No source edits are needed.</p>
+
+<h2 id="af3-atom-mode">Choose AF3 atom inputs</h2>
+<p><code>atom_mode="hard"</code> is the default. During optimization, AF3 prepares
+the native atom layout for the current winning amino acid at each design position.</p>
+<p>Set <code>atom_mode="soft"</code> to let the same amino-acid probabilities
+drive the query and the reference atom encoder. The gradient flows through both.
+The example factory accepts the following keys alongside the existing AF3 settings.</p>
+<pre><code>{
+  "atom_mode": "soft",
+  "design_positions": [3, 8],
+  "soft_atom_alphabets": ["FY", "IV"]
+}</code></pre>
+<p>Positions are zero-based and each alphabet follows the listed position. The initial
+implementation enumerates the Cartesian product of these alphabets and supports up
+to 27 native layouts. Use the <a href="install.html#af3-soft-atom">AF3 3.0.3 Soft Atom runtime</a>
+with F32, XLA attention, highest matmul precision, and zero recycles.
+Supply unmodified canonical protein chains with explicit empty
+<code>unpairedMsa</code>, <code>pairedMsa</code>, and <code>templates</code> fields
+(use <code>""</code>, <code>""</code>, and <code>[]</code>). The soft encoder needs
+complete native key windows for real atoms. The native query rows and profile
+are checked for each chain. Mutations that change chain entity assignments or
+other fixed native conditioning are rejected.</p>
+<p>The token probabilities and the atom layout weights share the same log
+probabilities. Layout weights are accumulated in log space to avoid underflow
+from multiplying many small probabilities. Scoring and export use the same
+F32 precision for choosing residue identities. Alpha, temperature, and their
+ratio must be finite positive normal values in F32.</p>
+<p>The example uses probability controls throughout optimization. With the Python
+API, use <code>soft=1</code> and <code>hard=0</code> for gradients. Use
+<code>hard=1</code> and <code>gradient=False</code> to inspect the locked distogram.
+<code>sequence_from_logits()</code> selects the best permitted residue at each
+position. <code>full_prediction()</code> uses that locked sequence's native atomic
+layout for forward-only structure prediction.</p>
 <h2>Custom objectives</h2><p>The objective receives a <code>Prediction</code> and controls. Return a scalar or <code>(scalar, scalar_metrics)</code>. Use JAX operations when gradients are needed. The explicit objective replaces hidden default model objectives; include every desired term yourself.</p><pre><code>from hallucination_lab.losses import distribution, interval, weighted
 
 objective = weighted({

@@ -31,4 +31,14 @@ date -u +%Y-%m-%dT%H:%M:%SZ &gt; model-data/ccd/retrieved-utc.txt
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export XLA_FLAGS=--xla_gpu_enable_triton_gemm=false
 .venv-af3/bin/hallulab doctor --runtime af3 --require-gpu   --weights /path/to/af3/models --profile environments/af3-runtime.json</code></pre>
-<p><code>doctor</code> checks explicitly requested imports, package versions, devices and parameter-file presence. It does not load all parameters, execute a model, or certify numerical correctness. Keep the profile, package versions, model source revision and input data identity with each run.</p><footer>Independent research software. Project code: Apache-2.0. External runtimes, model parameters and outputs retain their own terms.</footer></main></body></html>
+<p><code>doctor</code> checks explicitly requested imports, package versions, devices and parameter-file presence. It does not load all parameters, execute a model, or certify numerical correctness. Keep the profile, package versions, model source revision and input data identity with each run.</p>
+<h3 id="af3-soft-atom">AF3 runtime for Soft Atom</h3>
+<p>Use the build and CCD preparation steps above in separate runtime and build environments and a separate AF3 checkout. Before building the AF3 wheel, substitute the following checkout and version for the default Hard Atom source.</p>
+<pre><code>git -C external-af3-soft checkout 7b197fe859790fc3e04d03ea70dd0b9ba48881c9
+SETUPTOOLS_SCM_PRETEND_VERSION=3.0.3 CMAKE_BUILD_PARALLEL_LEVEL=4 CMAKE_ARGS=-DBUILD_TESTING=OFF \
+  .venv-af3-soft-build/bin/python -m build --wheel --no-isolation external-af3-soft
+.venv-af3-soft/bin/python -m pip install --no-deps external-af3-soft/dist/*.whl</code></pre>
+<p>Install this project into that runtime and prepare its CCD data with its own <code>build_data</code>. The Soft Atom backend checks the AF3 version and the unmodified v3.0.3 atom cross-attention source. Use the Soft Atom profile with the runtime check.</p>
+<pre><code>.venv-af3-soft/bin/hallulab doctor --runtime af3 --require-gpu \
+  --weights /path/to/af3/models --profile environments/af3-soft-atom-runtime.json</code></pre>
+<footer>Independent research software. Project code: Apache-2.0. External runtimes, model parameters and outputs retain their own terms.</footer></main></body></html>

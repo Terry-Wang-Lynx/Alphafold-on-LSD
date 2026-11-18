@@ -22,6 +22,7 @@ include environments/af2-py312-source.json
 include environments/af3-build-requirements.txt
 include environments/af3-cu12-requirements.txt
 include environments/af3-runtime.json
+include environments/af3-soft-atom-runtime.json
 include environments/verify_af2_source.py
 include examples/af2.config.json
 include examples/af2.py
@@ -42,7 +43,9 @@ include src/hallucination_lab/backends/_af3/__init__.py
 include src/hallucination_lab/backends/_af3/features.py
 include src/hallucination_lab/backends/_af3/hybrid.py
 include src/hallucination_lab/backends/_af3/mapping.py
+include src/hallucination_lab/backends/_af3/query_only.py
 include src/hallucination_lab/backends/_af3/remat.py
+include src/hallucination_lab/backends/_af3/soft_atom.py
 include src/hallucination_lab/backends/_af3/trunk.py
 include src/hallucination_lab/backends/af2.py
 include src/hallucination_lab/backends/af3.py
@@ -65,6 +68,7 @@ include tests/conftest.py
 include tests/test_af2_model_bank.py
 include tests/test_af3_features.py
 include tests/test_af3_mapping.py
+include tests/test_af3_soft_atom.py
 include tests/test_assessment.py
 include tests/test_contracts.py
 include tests/test_diagnostics.py
