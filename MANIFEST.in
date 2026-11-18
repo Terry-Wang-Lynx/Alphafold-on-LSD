@@ -46,6 +46,7 @@ include src/hallucination_lab/backends/_af3/mapping.py
 include src/hallucination_lab/backends/_af3/query_only.py
 include src/hallucination_lab/backends/_af3/remat.py
 include src/hallucination_lab/backends/_af3/soft_atom.py
+include src/hallucination_lab/backends/_af3/soft_atom_sampled.py
 include src/hallucination_lab/backends/_af3/trunk.py
 include src/hallucination_lab/backends/af2.py
 include src/hallucination_lab/backends/af3.py
@@ -69,6 +70,7 @@ include tests/test_af2_model_bank.py
 include tests/test_af3_features.py
 include tests/test_af3_mapping.py
 include tests/test_af3_soft_atom.py
+include tests/test_af3_soft_atom_sampled.py
 include tests/test_assessment.py
 include tests/test_contracts.py
 include tests/test_diagnostics.py

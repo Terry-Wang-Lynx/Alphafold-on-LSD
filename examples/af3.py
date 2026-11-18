@@ -25,9 +25,10 @@ def build(config):
                   objective=objective, model_dir=config["model_dir"],
                   design_positions=config.get("design_positions"), bucket=config.get("bucket", 256),
                   recycles=config.get("recycles", 0), atom_mode=atom_mode,
-                  soft_atom_alphabets=config.get("soft_atom_alphabets"))
+                  soft_atom_alphabets=config.get("soft_atom_alphabets"),
+                  soft_atom_samples=config.get("soft_atom_samples"))
     return Run(backend, initial_logits(backend.design_length, seed=7),
-               stage_module.make_stages(config, soft_atoms=atom_mode == "soft"),
+               stage_module.make_stages(config, soft_atoms=atom_mode != "hard"),
                problem_id=experiment_id(files=[__file__, stage_module.__file__, config["input_json"], config["pair_mask"]],
                                         settings={k: v for k, v in config.items()
                                                   if k not in {"output", "data_dir", "model_dir", "input_json", "pair_mask"}}),

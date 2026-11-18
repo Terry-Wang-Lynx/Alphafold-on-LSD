@@ -22,13 +22,18 @@ class AF3:
     def __init__(self, *, input_json, design_chain, objective, model_dir,
                  design_positions=None, bucket=256, recycles=0, remat=True,
                  configure=None, attention="xla", template_gradient=False, matmul_precision="highest",
-                 atom_mode="hard", soft_atom_alphabets=None):
-        if atom_mode not in ("hard", "soft"):
-            raise ValueError("atom_mode must be hard or soft")
-        soft = atom_mode == "soft"
-        if not soft and soft_atom_alphabets is not None:
+                 atom_mode="hard", soft_atom_alphabets=None, soft_atom_samples=None):
+        if atom_mode not in ("hard", "soft", "soft_sampled"):
+            raise ValueError("atom_mode must be hard or soft (soft or soft_sampled)")
+        soft = atom_mode != "hard"
+        sampled = atom_mode == "soft_sampled"
+        if atom_mode != "soft" and soft_atom_alphabets is not None:
             raise ValueError("soft_atom_alphabets requires atom_mode='soft'")
+        if soft_atom_samples is not None and (not sampled or type(soft_atom_samples) is not int
+                                               or soft_atom_samples < 2):
+            raise ValueError("Use at least two integer soft_atom_samples with atom_mode='soft_sampled'")
         self.atom_mode = atom_mode
+        self._soft_atom_samples = (4 if soft_atom_samples is None else soft_atom_samples) if sampled else None
         import haiku as hk
         import jax
         numerics = numerical_policy(matmul_precision)
@@ -83,10 +88,19 @@ class AF3:
             if native_encoder_sha != soft_atom.NATIVE_ENCODER_SHA256:
                 raise ValueError("Soft Atom requires the unmodified AF3 v3.0.3 atom cross-attention source")
             chains = soft_atom.input_chains(self.input_data)
-            sequences, combinations, allowed = soft_atom.candidate_layouts(
-                self.sequence, positions, soft_atom_alphabets,
-            )
-            soft_atom.require_stable_entities(chains, self.chain, sequences)
+            if sampled:
+                from ._af3.soft_atom_sampled import require_stable_entities
+
+                if self.input_data.get("userCCD") or len(self.input_data.get("modelSeeds", [])) != 1:
+                    raise ValueError("Sampled Soft Atom requires native CCD and one model seed")
+                require_stable_entities(chains, self.chain, positions)
+                self._sampled_chains = chains
+                allowed = np.ones((len(positions), len(ALPHABET)), bool)
+            else:
+                sequences, combinations, allowed = soft_atom.candidate_layouts(
+                    self.sequence, positions, soft_atom_alphabets,
+                )
+                soft_atom.require_stable_entities(chains, self.chain, sequences)
         self._scratch = tempfile.TemporaryDirectory(prefix="hallulab-af3-")
         self._cached_sequence, self._cached_batch = None, None
         batch = self._batch(self.sequence)
@@ -121,15 +135,16 @@ class AF3:
                     or config.global_config.flash_attention_implementation != "xla"
                     or not config.return_distogram):
                 raise ValueError("Soft Atom requires the F32 XLA distogram configuration")
-            raw_reference = self._batch(self.sequence, raw=True)
-            raw_batches = [raw_reference if seq == self.sequence else self._batch(seq, raw=True)
-                           for seq in sequences]
-            self._soft_atom_bank = jax.device_put(soft_atom.assemble_bank(
-                raw_reference, raw_batches, [{**chains, self.chain: seq} for seq in sequences],
-                self.token_indices,
-            ))
-            del raw_reference, raw_batches
-            self._soft_reference = batch
+            if not sampled:
+                raw_reference = self._batch(self.sequence, raw=True)
+                raw_batches = [raw_reference if seq == self.sequence else self._batch(seq, raw=True)
+                               for seq in sequences]
+                self._soft_atom_bank = jax.device_put(soft_atom.assemble_bank(
+                    raw_reference, raw_batches, [{**chains, self.chain: seq} for seq in sequences],
+                    self.token_indices,
+                ))
+                del raw_reference, raw_batches
+                self._soft_reference = batch
             self._allowed_amino_acids = allowed
 
         def full_features(pseudo):
@@ -147,13 +162,17 @@ class AF3:
                                      num_design_recycles=recycles, detach_recycles=True,
                                      template_gradient=template_gradient)(
                                          batch, full, full, key, atom_bank=atom_bank,
-                                         atom_layout_logs=atom_layout_logs)
+                                         atom_layout_logs=atom_layout_logs,
+                                         native_query_only=sampled)
 
         parameters = params.get_model_haiku_params(model_dir=Path(model_dir))
         self.parameters = parameters
 
         def prediction(logits, batch, key, controls, atom_bank=None, weights=None):
-            if soft:
+            if sampled:
+                pseudo, full = features(logits, controls)
+                native = forward.apply(weights, key, batch, full, key)
+            elif soft:
                 pseudo, log_p = soft_atom.relax_atom_sequence(logits, controls, allowed)
                 layout_logs = soft_atom.joint_log_probabilities(log_p, combinations)
                 native = forward.apply(weights, key, batch, full_features(pseudo), key,
@@ -197,6 +216,10 @@ class AF3:
             return self._full_apply(self._full_parameters, batch, full, key)
         self._full = full_model
         self._features = features
+        if sampled:
+            self._sample_distribution = jax.jit(
+                lambda logits, controls: soft_atom.relax_atom_sequence(logits, controls, allowed)
+            )
         from ..provenance import sha256_file, source_revision, source_tree_fingerprint
         from importlib.metadata import version
         from alphafold3.model.network import evoformer
@@ -220,11 +243,19 @@ class AF3:
                          "alphabet": ALPHABET, "attention": attention,
                          "template_gradient": template_gradient}
         if soft:
-            self.metadata.update(atom_mode="soft", soft_atom_alphabets=list(soft_atom_alphabets),
-                                 soft_atom_layouts=len(sequences),
+            self.metadata.update(atom_mode=atom_mode,
                                  soft_atom_native_encoder_sha256=native_encoder_sha,
-                                 carrier="fixed query-only trunk; shared probabilities for token and atom inputs",
                                  full_prediction_identity="locked allowed argmax")
+            if sampled:
+                self.metadata.update(
+                    soft_atom_samples=self._soft_atom_samples,
+                    carrier="native sampled layouts with shared sequence probabilities",
+                    soft_atom_gradient="direct soft token gradient plus leave-one-out likelihood ratio",
+                )
+            else:
+                self.metadata.update(atom_mode="soft", soft_atom_alphabets=list(soft_atom_alphabets),
+                                     soft_atom_layouts=len(sequences),
+                                     carrier="fixed query-only trunk; shared probabilities for token and atom inputs")
 
     def _batch(self, sequence, *, raw=False):
         if not raw and sequence == self._cached_sequence:
@@ -266,6 +297,14 @@ class AF3:
             self.token_chain_ids, self.token_residue_ids = chains, residues
         if len(batch["seq_mask"]) != self.bucket:
             raise ValueError("Input exceeds configured token bucket")
+        if self.atom_mode == "soft_sampled":
+            from ._af3.mapping import protein_tokens
+            from ._af3.query_only import audit_query_only_batch
+
+            for chain, original in self._sampled_chains.items():
+                current = sequence if chain == self.chain else original
+                indices = protein_tokens(chains, residues, chain, len(current))
+                audit_query_only_batch(batch, indices, current)
         if raw:
             return batch
         batch = jax.tree_util.tree_map(jnp.asarray, utils.remove_invalidly_typed_feats(batch))
@@ -274,7 +313,7 @@ class AF3:
         return batch
 
     def _carrier(self, logits, controls):
-        if self.atom_mode == "soft":
+        if self.atom_mode != "hard":
             return self._batch(self.sequence_from_logits(logits, controls))
         # relax can be raw logits; select the exact argmax used in the forward channel.
         pseudo = np.asarray(relax(logits, controls))
@@ -288,7 +327,7 @@ class AF3:
         values, key, controls = inputs(logits, key, controls, self.design_length)
         if controls["dropout"]:
             raise ValueError("AF3 dropout is not implemented; use configure for supported model options")
-        if self.atom_mode == "soft":
+        if self.atom_mode != "hard":
             from ._af3.soft_atom import f32_controls, f32_logits
             if controls["soft"] != 1 or controls["hard"] not in (0, 1):
                 raise ValueError("Soft Atom requires soft=1 and hard=0 for optimization, or hard=1 for scoring")
@@ -298,6 +337,8 @@ class AF3:
             import jax
             if self._full_parameters is None:
                 self._full_parameters = jax.device_put(self.parameters)
+            if self.atom_mode == "soft_sampled":
+                return self._evaluate_sampled(f32_logits(values), key, controls, gradient, prediction)
             args = (f32_logits(values), self._soft_reference, key, controls,
                     self._soft_atom_bank, self._full_parameters)
         else:
@@ -317,6 +358,53 @@ class AF3:
             grad = None
         return evaluation(loss, metrics, grad, predicted)
 
+    def _evaluate_sampled(self, values, key, controls, gradient, prediction):
+        from ._af3.soft_atom_sampled import draw_identities, mean_gradient
+
+        p, log_p = self._sample_distribution(values, controls)
+        if controls["hard"]:
+            draws = np.asarray(p).argmax(axis=-1)[None, :]
+        else:
+            draws = np.asarray(draw_identities(key, log_p, self._soft_atom_samples))
+        outcomes, chosen = {}, []
+        for i, draw in enumerate(draws):
+            identity = tuple(draw)
+            chosen.append(identity)
+            if identity in outcomes:
+                continue
+            carrier = list(self.sequence)
+            for pos, aa in zip(self.positions, draw, strict=True):
+                carrier[pos] = ALPHABET[aa]
+            batch = self._batch("".join(carrier))
+            args = (values, batch, key, controls, None, self._full_parameters)
+            if gradient and prediction and i == 0:
+                (loss, (metrics, pred)), grad = self._gradient_full(*args)
+            elif gradient:
+                (loss, metrics), grad = self._gradient(*args)
+                pred = None
+            elif prediction and i == 0:
+                loss, (metrics, pred) = self._forward(*args)
+                grad = None
+            else:
+                loss, metrics = self._score(*args)
+                pred, grad = None, None
+            outcomes[identity] = evaluation(loss, metrics, grad, pred)
+
+        rows = [outcomes[i] for i in chosen]
+        losses = [row.loss for row in rows]
+        if any(row.metrics.keys() != rows[0].metrics.keys() for row in rows):
+            raise ValueError("Objective metric keys changed across sampled atom layouts")
+        metrics = {name: np.mean([row.metrics[name] for row in rows]) for name in rows[0].metrics}
+        grad = None
+        if gradient:
+            scale = np.float32(controls["alpha"] / controls["temperature"])
+            grad = mean_gradient(losses, [row.gradient for row in rows], draws, np.asarray(p), scale)
+        pred = rows[0].prediction
+        if pred is not None:
+            pred = pred._replace(native={**pred.native, "sampled_layout_identities": draws,
+                                         "sampled_layout_losses": np.asarray(losses)})
+        return evaluation(np.mean(losses), metrics, grad, pred)
+
     @with_precision
     def full_prediction(self, logits, key, controls=None, *, autotune=True):
         """Forward-only native atom positions/confidence; intentionally outside grad API.
@@ -331,7 +419,7 @@ class AF3:
         values, key, controls = inputs(logits, key, controls, self.design_length)
         if controls["dropout"]:
             raise ValueError("AF3 dropout is not implemented; use configure for supported model options")
-        if self.atom_mode == "soft":
+        if self.atom_mode != "hard":
             from ._af3.soft_atom import f32_controls, f32_logits
             values = f32_logits(values)
             controls = f32_controls({**controls, "hard": 1, "soft": 1})
@@ -361,14 +449,14 @@ class AF3:
     def sequence_from_logits(self, logits, controls=None):
         """Decode the same carrier identities as evaluate, retaining fixed positions."""
         from ..sequence import decode, validate_controls
-        if self.atom_mode == "soft":
+        if self.atom_mode != "hard":
             from ._af3.soft_atom import f32_logits
             values = f32_logits(logits)
         else:
             values = np.asarray(logits)
         if values.shape != (self.design_length, 20) or not np.isfinite(values).all():
             raise ValueError("logits must be finite [design_length,20]")
-        if self.atom_mode == "soft":
+        if self.atom_mode != "hard":
             validate_controls(controls)
             design = "".join(ALPHABET[i] for i in
                              np.argmax(np.where(self._allowed_amino_acids, values, -np.inf), axis=-1))

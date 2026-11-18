@@ -42,9 +42,10 @@ class _HybridEmbeddingModel(af_model.Model):
 
     @hk.transparent
     def _hybrid_embeddings(self, batch_dict, pseudo_full, profile_full, key, *,
-                           atom_bank=None, atom_layout_logs=None):
+                           atom_bank=None, atom_layout_logs=None, native_query_only=False):
         batch = feat_batch.Batch.from_data_dict(batch_dict)
         soft_atoms = atom_bank is not None
+        query_only = soft_atoms or native_query_only
         evo_cfg = self.config.evoformer
         global_config = self.global_config
         dtype = jnp.bfloat16 if global_config.bfloat16 == "all" else jnp.float32
@@ -76,7 +77,7 @@ class _HybridEmbeddingModel(af_model.Model):
                 [target_feat, atom_token], axis=-1
             ).astype(dtype)
 
-        embedding_type = (DesignEvoformer if (self._template_gradient or soft_atoms)
+        embedding_type = (DesignEvoformer if (self._template_gradient or query_only)
                           else DetachedTemplateEvoformer)
         embedding_module = embedding_type(
             evo_cfg,
@@ -85,7 +86,7 @@ class _HybridEmbeddingModel(af_model.Model):
             pseudo_full,
             self._design_mask,
             True,
-            query_only=soft_atoms,
+            query_only=query_only,
         )
         prev = {
             "pair": jnp.zeros(
@@ -107,7 +108,7 @@ class _HybridEmbeddingModel(af_model.Model):
             }
             return embeddings, rng_key
 
-        if soft_atoms:
+        if query_only:
             embeddings = native_r0_embeddings(body, prev, key)
         else:
             embeddings = recycle_embeddings(
@@ -120,12 +121,12 @@ class HybridDesignTrunk(_HybridEmbeddingModel):
     """Hybrid AF3 trunk returning only model-native distogram logits."""
 
     def __call__(self, batch, pseudo_full, profile_full, key=None, *,
-                 atom_bank=None, atom_layout_logs=None):
+                 atom_bank=None, atom_layout_logs=None, native_query_only=False):
         if key is None:
             key = hk.next_rng_key()
         batch_obj, embeddings = self._hybrid_embeddings(
             batch, pseudo_full, profile_full, key,
-            atom_bank=atom_bank, atom_layout_logs=atom_layout_logs,
+            atom_bank=atom_bank, atom_layout_logs=atom_layout_logs, native_query_only=native_query_only,
         )
         distogram = distogram_head.DistogramHead(
             self.config.heads.distogram, self.global_config

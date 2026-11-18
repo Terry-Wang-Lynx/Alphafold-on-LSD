@@ -35,6 +35,32 @@ API, use <code>soft=1</code> and <code>hard=0</code> for gradients. Use
 <code>sequence_from_logits()</code> selects the best permitted residue at each
 position. <code>full_prediction()</code> uses that locked sequence's native atomic
 layout for forward-only structure prediction.</p>
+<h3>Full-chain Soft Atom with native atomic inputs</h3>
+<p>Set <code>atom_mode="soft_sampled"</code> to optimize all 20 amino-acid
+identities at every design position. Omit <code>design_positions</code> to design
+the entire chain. Use the same query-only AF3 3.0.3 runtime and numerical
+settings as above, with one AF3 featurization seed and the native CCD.</p>
+<pre><code>{
+  "atom_mode": "soft_sampled",
+  "soft_atom_samples": 4
+}</code></pre>
+<p>Each draw takes an entire sequence from the current softmax probabilities.
+AF3 generates its native reference atom types, coordinates, masks and packed
+attention windows for that sequence. Each draw uses the same soft token
+probabilities, and the objective is averaged across draws. The gradient is
+the sum of the direct soft-token derivative and a likelihood-ratio estimate
+for the probability of drawing each native atom layout. Both update the same
+logits. The likelihood-ratio estimator uses a leave-one-out baseline and
+requires at least two draws. Four draws are used by default. Increasing the
+draw count increases per-step AF3 work and can reduce sampling noise.</p>
+<p>Pass a fresh model key at each optimization step. The same logits, controls
+and key reproduce the same discrete layout draws. Soft evaluation returns the
+mean loss and mean metrics. With <code>prediction=True</code> the prediction is
+that of the first layout. Its <code>native</code> dictionary includes
+<code>sampled_layout_identities</code> in the library's amino-acid order and
+<code>sampled_layout_losses</code> for all draws. Score a locked sequence
+with <code>hard=1</code> and <code>gradient=False</code> to run only its own
+layout. Diffusion runs on the decoded sequence's native atomic input.</p>
 <h2>Custom objectives</h2><p>The objective receives a <code>Prediction</code> and controls. Return a scalar or <code>(scalar, scalar_metrics)</code>. Use JAX operations when gradients are needed. The explicit objective replaces hidden default model objectives; include every desired term yourself.</p><pre><code>from hallucination_lab.losses import distribution, interval, weighted
 
 objective = weighted({
