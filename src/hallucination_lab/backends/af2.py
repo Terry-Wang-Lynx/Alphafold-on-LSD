@@ -7,6 +7,23 @@ from ..sequence import ALPHABET
 from ..types import Prediction, objective_result
 
 
+def _parameter_digest(parameters):
+    """Identify the actual ColabDesign parameter leaves, including prepared banks."""
+    import hashlib
+    import json
+    import jax
+    digest = hashlib.sha256(b"af2-parameter-tree-v1")
+    paths, treedef = jax.tree_util.tree_flatten_with_path(parameters)
+    digest.update(str(treedef).encode())
+    for path, value in paths:
+        array = np.asarray(value)
+        header = json.dumps([jax.tree_util.keystr(path), array.dtype.str, array.dtype.name, array.shape]).encode()
+        digest.update(len(header).to_bytes(8, "big"))
+        digest.update(header)
+        digest.update(np.ascontiguousarray(array).view(np.uint8))
+    return digest.hexdigest()
+
+
 def _validate_recycle_options(options):
     unsupported = [key for key in ("initial_guess", "use_initial_guess", "use_initial_atom_pos")
                    if options.get(key, False)]
@@ -64,11 +81,9 @@ class AF2:
         from colabdesign import mk_afdesign_model
         if not sequence or any(a not in ALPHABET for a in sequence):
             raise ValueError("sequence must contain standard uppercase amino acids")
-        if not isinstance(recycles, int) or recycles < 0:
+        if type(recycles) is not int or recycles < 0:
             raise ValueError("recycles must be a nonnegative integer")
         positions = design_indices(design_positions, len(sequence))
-        self.design_length = len(positions)
-        self.positions = positions
         self.sequence = sequence
         options = dict(model_options or {})
         options.setdefault("use_bfloat16", False)
@@ -129,13 +144,37 @@ class AF2:
         if prepare is not None:
             prepare(model)
         _validate_recycle_options(model._args)
+        # ColabDesign's partial protocol indexes fix_pos through opt["pos"];
+        # the other protocols index directly into the designed chain.
+        identities = np.asarray([ALPHABET.index(a) for a in sequence], np.int32)
+        fixed_local = model.opt.get("fix_pos", [])
+        prepared_fixed = np.empty(0, dtype=np.int32)
+        if np.size(fixed_local):
+            if "pos" in model.opt:
+                target_positions = np.asarray(model.opt["pos"])
+                indices = design_indices(fixed_local, len(target_positions))
+                prepared_fixed = design_indices(target_positions[indices], len(sequence))
+                prepared_aa = np.asarray(model._wt_aatype_sub)
+            else:
+                prepared_fixed = design_indices(fixed_local, len(sequence))
+                prepared_aa = np.asarray(getattr(model, "_wt_aatype", identities))[prepared_fixed]
+            if not np.array_equal(prepared_aa, identities[prepared_fixed]):
+                raise ValueError("Prepared fixed residue identities differ from the supplied sequence")
+            if design_positions is None:
+                positions = design_indices(np.setdiff1d(positions, prepared_fixed), len(sequence))
+            elif np.intersect1d(positions, prepared_fixed).size:
+                raise ValueError("Explicit design_positions overlap the prepared fix_pos")
+
         fixed = np.setdiff1d(np.arange(len(sequence)), positions)
-        # ColabDesign's pre-feature _fix_pos applies exact one-hot identities.
-        if len(fixed):
-            if protocol == "partial":
-                raise ValueError("Partial protocol + design_positions requires a custom prepare adapter")
-            model._wt_aatype = np.asarray([ALPHABET.index(a) for a in sequence], np.int32)
-            model.opt["fix_pos"] = fixed
+        if fixed.size:
+            if "pos" in model.opt or protocol == "partial":
+                if not np.array_equal(np.sort(prepared_fixed), fixed):
+                    raise ValueError("Partial protocol requires all fixed sites to be set in prepare")
+            else:
+                model._wt_aatype = identities
+                model.opt["fix_pos"] = fixed
+        self.design_length = len(positions)
+        self.positions = positions
         # Keep preparation weights visible to native loss callbacks, but replace
         # their entire loss dictionary in post(), so none enter the total implicitly.
         model.opt["weights"] = {**model.opt["weights"], "lab_objective": 1.0}
@@ -144,8 +183,14 @@ class AF2:
         options_base = deepcopy(model.opt)
         self._default_pssm_hard = bool(options_base.get("pssm_hard", False))
         # Snapshot prepared bias just like the compiled forward's immutable inputs.
-        self._sequence_bias = np.broadcast_to(np.asarray(base.get("bias", 0.)),
+        bias = base.get("bias")
+        if bias is None:
+            bias = 0.
+        self._sequence_bias = np.broadcast_to(np.asarray(bias),
                                               (1, len(sequence), 20))[0].copy()
+        if (np.isnan(self._sequence_bias).any() or np.isposinf(self._sequence_bias).any()
+                or not np.isfinite(self._sequence_bias).any(axis=-1).all()):
+            raise ValueError("Sequence bias must leave at least one allowed residue per site")
         base_seq = jnp.asarray(model._params["seq"])
         length = len(base["residue_index"])
         previous = {"prev_msa_first_row": jnp.zeros((length, 256)),
@@ -153,7 +198,11 @@ class AF2:
                     "prev_pos": jnp.zeros((length, 37, 3))}
         if model._args["use_dgram"]:
             previous["prev_dgram"] = jnp.zeros((length, length, 64))
-        self._parameters = model._model_params
+        # Bind a snapshot: later edits to the publicly accessible native model
+        # must not change the arrays identified in the run manifest.
+        self._parameters = jax.tree_util.tree_map(
+            lambda value: value if isinstance(value, jax.Array) else jnp.array(value, copy=True),
+            model._model_params)
         self._default_recycles = recycles
 
         def execute(logits, key, controls, parameters, recycle_count, gradient):
@@ -185,9 +234,17 @@ class AF2:
         from pathlib import Path
         from inspect import getfile
         from ..provenance import sha256_file, source_tree_fingerprint
-        weights = {name: Path(data_dir) / f"params_{name}.npz" for name in names}
-        weight_hashes = {name: sha256_file(path) if path.exists() else None
-                         for name, path in weights.items()}
+        data_root = Path(data_dir)
+        weight_hashes = {}
+        for name in names:
+            # Match get_model_haiku_params' exact search order in ColabDesign.
+            paths = [root / filename for filename in (f"params_{name}.npz", f"{name}.npz")
+                     for root in (data_root / "params", data_root)]
+            weight_path = next((path for path in paths if path.is_file()), None)
+            weight_hashes[name] = sha256_file(weight_path) if weight_path else None
+        effective_hashes = {name: _parameter_digest(params) for name, params
+                            in zip(names, self._parameters, strict=True)}
+        target_length = length - len(sequence) if protocol == "binder" else 0
         self.metadata = {"numerics": numerics, "model_config": model._cfg.to_dict(),
                          "runtime_source": source_tree_fingerprint(Path(colabdesign.__file__).parent),
                          "runtime_model_source_sha256": sha256_file(getfile(type(model))),
@@ -195,6 +252,9 @@ class AF2:
                          "model_names": names, "weight_sha256_by_model": weight_hashes,"backend": "af2", "colabdesign": version("colabdesign"),
                          "jax": jax.__version__, "model": names[0] if len(names) == 1 else None, "protocol": protocol,
                          "sequence": sequence, "design_positions": positions.tolist(),
+                         "design_tokens": (positions + target_length).tolist(),
+                         "target_length": target_length,
+                         "effective_parameter_sha256_by_model": effective_hashes,
                          "recycles": recycles, "recycle_gradient": "last",
                          "execution": "native_single_pass_host_recycles",
                          "score_mode": score_mode,
@@ -227,8 +287,8 @@ class AF2:
         controls.setdefault("pssm_hard", self._default_pssm_hard)
         if not isinstance(controls["pssm_hard"], (bool, np.bool_)):
             raise ValueError("pssm_hard must be boolean")
-        model_index = controls.pop("model_index", 0)
-        recycle_count = controls.pop("recycles", self._default_recycles)
+        model_index = controls.setdefault("model_index", 0)
+        recycle_count = controls.setdefault("recycles", self._default_recycles)
         for name, value in (("model_index", model_index), ("recycles", recycle_count)):
             if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)) or value < 0:
                 raise ValueError(f"{name} must be a nonnegative integer")
@@ -265,12 +325,21 @@ class AF2:
         native hard sequence, not the argmax of a raw/soft mixed pseudosequence.
         Fixed positions always retain the supplied starting identities.
         """
-        from ..sequence import decode, validate_controls
+        import jax
+        import jax.numpy as jnp
+        from ..sequence import validate_controls
         controls = validate_controls(controls)
         values = np.asarray(logits, np.float32)
         if values.shape != (self.design_length, 20) or not np.isfinite(values).all():
             raise ValueError("logits must be finite [design_length,20]")
-        design = decode(controls["alpha"] * values + self._sequence_bias[self.positions])
+        # The native decoder selects argmax *after* softmax, which matters for
+        # close logits. A -inf residue bias is a valid native exclusion.
+        biased = controls["alpha"] * jnp.asarray(values) + jnp.asarray(self._sequence_bias[self.positions])
+        probabilities = jax.nn.softmax(biased / controls["temperature"], axis=-1)
+        probabilities = np.asarray(probabilities)
+        if not np.isfinite(probabilities).all():
+            raise ValueError("Native AF2 softmax produced nonfinite probabilities during decoding")
+        design = "".join(ALPHABET[i] for i in probabilities.argmax(axis=-1))
         if len(design) != self.design_length:
             raise ValueError("Design sequence length differs")
         sequence = list(self.sequence)

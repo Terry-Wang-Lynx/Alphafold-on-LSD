@@ -30,7 +30,7 @@ def mutation_step(state, backend, controls, key):
     This is a reference algorithm, not a performance claim.
     """
     trials = controls.get("trials", 4)
-    if not isinstance(trials, (int, np.integer)) or trials < 1:
+    if isinstance(trials, (bool, np.bool_)) or not isinstance(trials, (int, np.integer)) or trials < 1:
         raise ValueError("trials must be a positive integer")
     rng = np.random.default_rng(np.random.SeedSequence(np.asarray(key).tolist()))
     hard = np.eye(20, dtype=np.float32)[state.logits.argmax(-1)]

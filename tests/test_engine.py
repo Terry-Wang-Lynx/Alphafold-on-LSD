@@ -171,3 +171,81 @@ def test_generator_schedule_captured_and_external_mutation_isolated(quadratic):
     stage.controls["temperature"] = 0.01
     assert len(run.manifest["stages"]) == 1
     assert run.controls_at(0)[1]["temperature"] == 1.0
+
+
+def test_learning_rate_ramp_retains_both_endpoints():
+    stage = Stage("ramp", 5, controls={"learning_rate": .1}, end={"learning_rate": .01})
+    np.testing.assert_allclose([stage.at(i)["learning_rate"] for i in range(5)], np.linspace(.1, .01, 5))
+    assert Stage("rate", 2, .2, end={"learning_rate": .1}).at(1)["learning_rate"] == .1
+    with pytest.raises(ValueError, match="positive"):
+        Stage("invalid", 2, end={"learning_rate": 0})
+
+
+def test_fingerprint_tracks_starting_logits_and_custom_step(quadratic):
+    stages = [Stage("test", 1)]
+    a = initial_logits(sequence="AA")
+    b = initial_logits(sequence="VV")
+    def weighted_step(scale):
+        def step(state, backend, controls, key):
+            return gradient_step(state, backend, {**controls, "learning_rate": scale}, key)
+        return step
+    def identity(x, step):
+        return Run(quadratic, x, stages, problem_id="constant", step_fn=step).fingerprint
+    assert identity(a, gradient_step) != identity(b, gradient_step)
+    assert identity(a, partial(gradient_step, optimizer="sgd")) != identity(a, gradient_step)
+    assert identity(a, weighted_step(.1)) != identity(a, weighted_step(.2))
+    assert identity(a, weighted_step(.1)) == identity(a.copy(), weighted_step(.1))
+
+
+@pytest.mark.parametrize("name,value", [
+    ("step", 0.5), ("step", True), ("best_logits", np.full((2, 20), np.inf, np.float32)),
+    ("best_logits", np.zeros((1, 20), np.float32)),
+])
+def test_invalid_checkpoint_rejected_before_modifying_trajectory(tmp_path, quadratic, name, value):
+    from hallucination_lab.checkpoint import save, load
+    original = make_run(quadratic, output=tmp_path)
+    original.run(max_steps=1)
+    path = tmp_path / "checkpoint.npz"
+    saved = load(path)
+    saved["state"][name] = value
+    save(path, saved)
+    trajectory = tmp_path / "trajectory.jsonl"
+    before = trajectory.read_bytes()
+    reader = make_run(quadratic, output=tmp_path)
+    with pytest.raises(ValueError, match="heckpoint"):
+        reader.restore(path)
+    assert trajectory.read_bytes() == before and reader.state.step == 0
+
+
+def test_composite_checks_physical_and_decoded_row_order_before_scoring():
+    from types import SimpleNamespace
+
+    def member(positions, decoder):
+        return SimpleNamespace(design_length=2, metadata={}, positions=positions,
+                               sequence_from_logits=lambda x, c: decoder,
+                               evaluate=lambda *args, **kwargs: pytest.fail("unexpected evaluation"))
+    first = member([0, 1], "AG")
+    second = member([1, 0], "GA")
+    with pytest.raises(ValueError, match="row orders differ"):
+        Composite({"a": first, "b": second}, sum, variable_order=["i", "j"])
+    paired = Composite({"a": first, "b": second}, sum, variable_order=["i", "j"],
+                       member_positions={"a": [0, 1], "b": [1, 0]})
+    assert paired.sequence_from_logits(initial_logits(sequence="AG")) == "AG"
+    second.sequence_from_logits = lambda x, c: "AG"
+    with pytest.raises(ValueError, match="identities differ"):
+        paired.evaluate(initial_logits(sequence="AG"), np.array([0, 1], np.uint32))
+
+
+def test_composite_reduces_member_gradients_before_rounding():
+    import jax.numpy as jnp
+    from types import SimpleNamespace
+    from hallucination_lab.types import Evaluation
+    def member(g):
+        return SimpleNamespace(design_length=1, metadata={},
+                               evaluate=lambda x, k, c, gradient: Evaluation(1., {"m": 2.},
+                                                                            np.full_like(x, g)))
+    members = dict(zip("abc", [member(1.e7), member(.25), member(-1.e7)]))
+    c = Composite(members, lambda x, controls: sum(x.values(), jnp.array(0.)), variable_order=["p"])
+    out = c.evaluate(initial_logits(sequence="A"), np.array([0, 1], np.uint32))
+    np.testing.assert_array_equal(out.gradient, np.full((1, 20), .25, np.float32))
+    assert out.metrics["condition/b/m"] == 2.

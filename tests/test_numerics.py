@@ -96,3 +96,10 @@ def test_nested_guard_failure_preserves_evidence(tmp_path):
                            output=path, strict=False)
     assert report['backend_guard']['scope'] == 'scalar'
     np.testing.assert_array_equal(np.load(path.with_suffix('.npz'))['rejected_gradient'], [[1.]])
+
+
+def test_tiny_opposite_gradients_keep_direction_and_scale():
+    checks = compare_evaluations(result([[1e-210, 0]]), result([[-1e-210, 0]]))
+    assert not checks["passed"]
+    assert checks["gradient_cosine"] == -1
+    assert checks["gradient_relative_l2"] == 2

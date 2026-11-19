@@ -45,3 +45,19 @@ def test_cli_diagnostic_failure_is_nonzero(capsys):
         main(["doctor", "--require-gpu"])
     assert error.value.code == 2
     assert "require --runtime" in capsys.readouterr().err
+
+
+def test_weight_layouts_and_device_error_are_reported_separately(monkeypatch, tmp_path):
+    def failed_devices():
+        raise RuntimeError("no device")
+    monkeypatch.setattr(diagnostics.importlib, "import_module",
+                        lambda name: SimpleNamespace(local_devices=failed_devices))
+    (tmp_path / "params").mkdir()
+    (tmp_path / "params" / "params_model_1.npz").write_bytes(b"1")
+    (tmp_path / "af3.bin.zst.00").write_bytes(b"1")
+    for runtime in ("af2", "af3"):
+        report = diagnostics.preflight(runtime=runtime, weights=tmp_path)
+        assert not report["ok"]
+        checks = {item["name"]: item["ok"] for item in report["checks"]}
+        assert checks["weight_files"] and checks["import:jax"] and not checks["devices"]
+        assert len(checks) == len(report["checks"])

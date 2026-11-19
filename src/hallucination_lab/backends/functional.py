@@ -13,7 +13,7 @@ class Functional:
         import jax
         numerics = numerical_policy(matmul_precision)
         self._matmul_precision = matmul_precision
-        if not isinstance(design_length, int) or design_length < 1 or not identifier:
+        if type(design_length) is not int or design_length < 1 or not identifier:
             raise ValueError("Provide positive design_length and stable model identifier")
         self.design_length = design_length
         self.metadata = {"numerics": numerics, "backend": "functional", "identifier": identifier,

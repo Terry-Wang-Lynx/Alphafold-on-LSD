@@ -31,6 +31,8 @@ class _HybridEmbeddingModel(af_model.Model):
         num_design_recycles=0,
         detach_recycles=False,
         template_gradient=False,
+        profile_mode="replace",
+        native_sequence_input=False,
         name="diffuser",
     ):
         super().__init__(config, name=name)
@@ -39,6 +41,8 @@ class _HybridEmbeddingModel(af_model.Model):
         self._num_design_recycles = int(num_design_recycles)
         self._detach_recycles = bool(detach_recycles)
         self._template_gradient = bool(template_gradient)
+        self._profile_mode = profile_mode
+        self._native_sequence_input = native_sequence_input
 
     @hk.transparent
     def _hybrid_embeddings(self, batch_dict, pseudo_full, profile_full, key):
@@ -49,9 +53,13 @@ class _HybridEmbeddingModel(af_model.Model):
 
         with utils.bfloat16_context():
             aatype_onehot = jax.nn.one_hot(batch.token_features.aatype, WIDTH)
-            mask = self._design_mask[:, None].astype(aatype_onehot.dtype)
-            hybrid_aatype = aatype_onehot * (1.0 - mask) + pseudo_full * mask
-            hybrid_profile = batch.msa.profile * (1.0 - mask) + profile_full * mask
+            if self._native_sequence_input:
+                hybrid_aatype, hybrid_profile = aatype_onehot, batch.msa.profile
+            else:
+                from .features import inject_soft_sequence
+                hybrid_aatype, hybrid_profile = inject_soft_sequence(
+                    aatype_onehot, batch.msa.profile, pseudo_full, self._design_mask,
+                    profile_mode=self._profile_mode, profile_full=profile_full)
             target_feat = jnp.concatenate(
                 [hybrid_aatype, hybrid_profile, batch.msa.deletion_mean[..., None]], axis=-1
             ).astype(dtype)
@@ -75,7 +83,8 @@ class _HybridEmbeddingModel(af_model.Model):
             self._remat_cfg,
             pseudo_full,
             self._design_mask,
-            True,
+            soft_msa_query=not self._native_sequence_input,
+            query_only=self._profile_mode == "query_only",
         )
         prev = {
             "pair": jnp.zeros(

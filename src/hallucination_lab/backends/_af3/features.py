@@ -9,7 +9,8 @@ import jax.numpy as jnp
 
 
 def inject_soft_sequence(aatype_one_hot: jnp.ndarray, profile: jnp.ndarray,
-                         pseudo_seq: jnp.ndarray, design_mask: jnp.ndarray):
+                         pseudo_seq: jnp.ndarray, design_mask: jnp.ndarray, *,
+                         profile_mode="replace", profile_full=None):
     """Write the soft sequence into the target-feature channels.
 
     Args:
@@ -19,17 +20,22 @@ def inject_soft_sequence(aatype_one_hot: jnp.ndarray, profile: jnp.ndarray,
         defined on every token but only used where design_mask is True.
       design_mask: [N] bool, mutable (binder) tokens.
 
-    Returns (aatype_one_hot, profile) with design rows replaced by pseudo_seq.
-    The target rows are untouched, so the gradient reaches only design tokens.
+    In native mode preserve the hard carrier's profile. In query_only and
+    legacy replace modes replace the profile on design rows as well.
     """
     m = design_mask[:, None].astype(aatype_one_hot.dtype)
     new_aatype = aatype_one_hot * (1 - m) + pseudo_seq * m
-    new_profile = profile * (1 - m) + pseudo_seq * m
+    if profile_mode == "native":
+        new_profile = profile
+    else:
+        replacement = pseudo_seq if profile_full is None else profile_full
+        new_profile = profile * (1 - m) + replacement * m
     return new_aatype, new_profile
 
 
 def create_msa_feat_with_soft_query(msa, pseudo_seq: jnp.ndarray,
-                                    design_mask: jnp.ndarray) -> jnp.ndarray:
+                                    design_mask: jnp.ndarray, *, query_only=False,
+                                    source_rows=None) -> jnp.ndarray:
     """Create AF3 MSA features while soft-replacing the query row.
 
     This is the AF3 equivalent of the ColabDesign update_seq() write:
@@ -39,8 +45,8 @@ def create_msa_feat_with_soft_query(msa, pseudo_seq: jnp.ndarray,
     AF3 does not store a floating msa_feat in the batch. It stores integer
     `msa.rows`, and the official network creates `msa_1hot` inside
     featurization.create_msa_feat(). We recreate the same feature locally and
-    replace only row 0 at design positions with the differentiable pseudo
-    sequence before the MSA stack sees it.
+    replace the original query row at design positions. For verified
+    query-only batches, all active query copies follow the pseudo sequence.
 
     Args:
       msa: alphafold3.model.features.MSA with rows/mask/deletion_matrix.
@@ -54,7 +60,14 @@ def create_msa_feat_with_soft_query(msa, pseudo_seq: jnp.ndarray,
     msa_1hot = jax.nn.one_hot(msa.rows, msa_width)
 
     soft_query = jnp.pad(pseudo_seq, ((0, 0), (0, 1)))
-    row_mask = (jnp.arange(msa_1hot.shape[0]) == 0)[:, None, None]
+    if query_only:
+        # Verified before dispatch: every effective cell of the designed
+        # protein is a query copy, including duplicated native query rows.
+        row_mask = jnp.asarray(msa.mask, dtype=bool)[..., None]
+    else:
+        if source_rows is None:
+            source_rows = jnp.arange(msa_1hot.shape[0])
+        row_mask = (source_rows == 0)[:, None, None]
     pos_mask = design_mask[None, :, None]
     m = (row_mask & pos_mask).astype(msa_1hot.dtype)
     msa_1hot = msa_1hot * (1 - m) + soft_query[None, :, :] * m

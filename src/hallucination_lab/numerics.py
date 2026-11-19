@@ -73,14 +73,34 @@ def compare_evaluations(reference, observed, *, tolerances=None, gradients=True)
         result['checks']['finite_matching_gradients'] = bool(valid)
         if valid:
             a, b = np.asarray(a, np.float64), np.asarray(b, np.float64)
-            an, bn = np.linalg.norm(a), np.linalg.norm(b)
+            # Separate direction and magnitude before squaring. Tiny nonzero
+            # gradients can otherwise look identical to a zero gradient.
+            def length_and_unit(g):
+                peak = np.max(np.abs(g))
+                if peak == 0:
+                    return 0., np.zeros_like(g)
+                scaled = g / peak
+                norm = np.linalg.norm(scaled)
+                return float(peak) * float(norm), scaled / norm
+
+            an, au = length_and_unit(a)
+            bn, bu = length_and_unit(b)
             both_zero = an == bn == 0
-            cosine = 1. if both_zero else (float(np.vdot(a, b)/(an*bn)) if an*bn else None)
-            relative = 0. if both_zero else (float(np.linalg.norm(a-b)/an) if an else None)
-            def update(g, norm):
-                return t.learning_rate * g * np.sqrt(np.count_nonzero(np.square(g).sum(-1))) / (norm+1e-7)
-            rms = float(np.sqrt(np.square(update(a, an)-update(b, bn)).mean()))
-            result.update(gradient_reference_norm=float(an), gradient_observed_norm=float(bn),
+            cosine = 1. if both_zero else (float(np.vdot(au, bu)) if an and bn else None)
+            relative = 0. if both_zero else None
+            if an and np.isfinite(an) and np.isfinite(bn):
+                ratio = bn / an
+                if np.isfinite(ratio):
+                    relative = length_and_unit(au - bu * ratio)[0]
+            def update(g, norm, unit):
+                active = np.count_nonzero(np.any(g != 0, axis=-1))
+                factor = 1. if np.isinf(norm) else norm / (norm + 1e-7)
+                return (t.learning_rate * np.sqrt(active) * factor) * unit
+            rms = float(np.sqrt(np.square(update(a, an, au)-update(b, bn, bu)).mean()))
+            if relative is not None and not np.isfinite(relative):
+                relative = None
+            result.update(gradient_reference_norm=an if np.isfinite(an) else None,
+                          gradient_observed_norm=bn if np.isfinite(bn) else None,
                           gradient_cosine=cosine, gradient_relative_l2=relative,
                           normalized_update_rms=rms)
             result['checks'].update(
@@ -117,6 +137,10 @@ def audit_backend(backend, logits, key, controls=None, *, reference=None,
               'input_shape': list(x.shape), 'input_dtype': str(x.dtype),
               'input_sha256': hashlib.sha256(x.tobytes()).hexdigest(),
               'backend_metadata': backend.metadata, 'checks': {}}
+    if backend.metadata.get("backend") in {"af2", "af3", "functional"}:
+        effective = np.asarray(x, np.float32)
+        report["effective_input_dtype"] = str(effective.dtype)
+        report["effective_input_sha256"] = hashlib.sha256(effective.tobytes()).hexdigest()
     arrays = {'logits': x, 'key': k}
     def evaluate(which, gradient):
         return which.evaluate(x.copy(), k.copy(), deepcopy(c), gradient=gradient)

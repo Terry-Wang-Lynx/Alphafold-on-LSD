@@ -43,8 +43,18 @@ def objective_result(result):
         loss, metrics = result
     else:
         loss, metrics = result, {}
-    if getattr(loss, "ndim", 0) != 0:
+    def real_scalar(value):
+        if hasattr(value, "dtype") and hasattr(value, "ndim"):
+            # Checking dtype and shape does not materialize a traced JAX value.
+            return value.ndim == 0 and (value.dtype.kind in "fiu" or str(value.dtype) == "bfloat16")
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+    if not real_scalar(loss):
         raise ValueError("Objective loss must be scalar")
-    if any(getattr(v, "ndim", 0) != 0 for v in metrics.values()):
+    def metric_scalar(value):
+        return real_scalar(value) or (np.ndim(value) == 0 and
+               (isinstance(value, (bool, np.bool_)) or getattr(value, "dtype", None) == np.dtype(bool)))
+
+    if any(not metric_scalar(v) for v in metrics.values()):
         raise ValueError("Objective metrics must be scalar")
     return loss, metrics

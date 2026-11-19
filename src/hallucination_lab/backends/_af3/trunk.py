@@ -37,12 +37,13 @@ class DesignEvoformer(evoformer_network.Evoformer):
     """
 
     def __init__(self, config, global_config, remat_cfg, pseudo_full,
-                 design_mask, soft_msa_query=True, name='evoformer'):
+                 design_mask, soft_msa_query=True, name='evoformer', *, query_only=False):
         super().__init__(config, global_config, name=name)
         self._remat_cfg = remat_cfg
         self._pseudo_full = pseudo_full
         self._design_mask = design_mask
         self._soft_msa_query = soft_msa_query
+        self._query_only = query_only
 
     @hk.transparent
     def _embed_process_msa(self, msa_batch, pair_activations, pair_mask, key,
@@ -54,20 +55,16 @@ class DesignEvoformer(evoformer_network.Evoformer):
         """
         dtype = pair_activations.dtype
         if self._soft_msa_query:
-            # Match ColabDesign update_seq() semantics without writing soft
-            # values into AF3's integer msa.rows. Build the floating msa_feat
-            # before shuffle, inject query row 0, then apply the same shuffle
-            # and truncation order to both msa_batch and msa_feat.
+            # Select the same rows as native shuffle/truncate before expanding
+            # the one-hot features. Carry source row IDs through the permutation.
             key, sample_key = jax.random.split(key)
             logits = (jnp.clip(jnp.sum(msa_batch.mask, axis=-1), 0.0, 1.0) - 1.0) * 1e6
             index_order = featurization.gumbel_argsort_sample_idx(sample_key, logits)
+            source_rows = index_order[jnp.arange(self.config.num_msa)]
+            msa_batch = msa_batch.index_msa_rows(source_rows)
             msa_feat = featmod.create_msa_feat_with_soft_query(
-                msa_batch, self._pseudo_full, self._design_mask)
-            msa_batch = msa_batch.index_msa_rows(index_order)
-            msa_feat = msa_feat[index_order]
-            indices = jnp.arange(self.config.num_msa)
-            msa_batch = msa_batch.index_msa_rows(indices)
-            msa_feat = msa_feat[indices].astype(dtype)
+                msa_batch, self._pseudo_full, self._design_mask,
+                query_only=self._query_only, source_rows=source_rows).astype(dtype)
         else:
             msa_batch, key = featurization.shuffle_msa(key, msa_batch)
             msa_batch = featurization.truncate_msa_batch(msa_batch, self.config.num_msa)

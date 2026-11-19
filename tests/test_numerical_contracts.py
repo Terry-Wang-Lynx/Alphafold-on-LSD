@@ -32,6 +32,7 @@ def test_precision_changes_checkpoint_identity(quadratic):
 def test_af3_prediction_and_score_use_one_evaluation(prediction, gradient, key):
     from hallucination_lab.backends.af3 import AF3
     b = AF3.__new__(AF3)
+    b._full_parameters = {}
     b.design_length = 2
     b._matmul_precision = 'highest'
     b._carrier = lambda *args: {}

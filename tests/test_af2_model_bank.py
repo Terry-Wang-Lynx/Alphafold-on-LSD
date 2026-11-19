@@ -204,3 +204,44 @@ def test_guard_checks_the_same_final_state_and_key_without_extra_recycle(backend
     assert [c[0] for c in calls] == ['fn', 'grad_fn', 'fn']
     assert calls[1][1] is calls[2][1]
     np.testing.assert_array_equal(calls[1][2], calls[2][2])
+
+
+def test_decoder_matches_native_softmax_tie_and_residue_exclusion(backend):
+    x = np.ones((1, 20), dtype=np.float32)
+    x[0, -1] += 1e-6
+    assert backend.sequence_from_logits(x, {"temperature": 100.}) == "A"
+    backend._sequence_bias[0, 0] = -np.inf
+    assert backend.sequence_from_logits(x, {"temperature": 100.}) == "R"
+
+
+def test_prepared_fixed_sites_are_preserved_and_conflicts_raise(monkeypatch, tmp_path):
+    import hallucination_lab.backends.af2 as module
+
+    class TwoResidues(NativeModel):
+        def prep_inputs(self, **kwargs):
+            self._inputs = {"seq_mask": jnp.ones(2), "residue_index": jnp.arange(2),
+                            "asym_id": jnp.zeros(2), "bias": None}
+        def set_seq(self, sequence):
+            self._params = {"seq": jnp.ones((1, 2, 20))}
+
+    monkeypatch.setitem(sys.modules, "colabdesign", SimpleNamespace(mk_afdesign_model=TwoResidues,
+                                                                    __file__=__file__))
+    monkeypatch.setattr(module, "version", lambda name: "mock")
+    def prepare(model):
+        model.opt["fix_pos"] = np.array([1])
+        model._wt_aatype = np.array([0, 7])
+    common = dict(sequence="AG", objective=lambda p, c: 0., data_dir=tmp_path, prepare=prepare,
+                  model_name="model_1_ptm")
+    # ColabDesign prefers data_dir/params/params_NAME.npz over the root file.
+    import hashlib
+    (tmp_path / "params").mkdir()
+    (tmp_path / "params/params_model_1_ptm.npz").write_bytes(b"preferred")
+    (tmp_path / "params_model_1_ptm.npz").write_bytes(b"other")
+    model = AF2(**common)
+    assert model.design_length == 1
+    assert model.metadata["weight_sha256"] == hashlib.sha256(b"preferred").hexdigest()
+    assert model.metadata["effective_parameter_sha256_by_model"]["model_1_ptm"]
+    assert model.metadata["design_tokens"] == [0]
+    assert model.sequence_from_logits(np.eye(20, dtype=np.float32)[[19]]) == "VG"
+    with pytest.raises(ValueError, match="overlap"):
+        AF2(**common, design_positions=[1])

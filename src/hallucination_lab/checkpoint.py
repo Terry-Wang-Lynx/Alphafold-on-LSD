@@ -51,6 +51,14 @@ def save(path, tree):
 
 
 def load(path):
+    from zipfile import BadZipFile
+    try:
+        return _load(path)
+    except (BadZipFile, EOFError) as error:
+        raise ValueError(f"Invalid checkpoint {path}: damaged NPZ archive") from error
+
+
+def _load(path):
     archive = np.load(path, allow_pickle=False)
     if not isinstance(archive, np.lib.npyio.NpzFile):
         raise ValueError(f"Invalid checkpoint {path}: expected an NPZ archive")

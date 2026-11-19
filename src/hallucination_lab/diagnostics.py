@@ -4,6 +4,7 @@ from importlib.metadata import PackageNotFoundError, version
 import json
 from pathlib import Path
 import platform
+import re
 import sys
 from ._version import __version__
 
@@ -65,21 +66,26 @@ def preflight(*, runtime=None, require_gpu=False, weights=None, profile=None):
             try:
                 module = importlib.import_module(name)
                 check(f"import:{name}", True, path=getattr(module, "__file__", None))
-                if name == "jax":
+            except Exception as error:
+                check(f"import:{name}", False, error=f"{type(error).__name__}: {error}")
+                continue
+            if name == "jax":
+                try:
                     devices = [{"platform": d.platform, "kind": d.device_kind}
                                for d in module.local_devices()]
                     report["devices"] = devices
                     if require_gpu:
                         check("gpu", any(d["platform"] == "gpu" for d in devices),
                               devices=devices)
-            except Exception as error:
-                check(f"import:{name}", False, error=f"{type(error).__name__}: {error}")
+                except Exception as error:
+                    check("devices", False, error=f"{type(error).__name__}: {error}")
     if weights is not None:
         path = Path(weights)
         if runtime == "af2":
-            files = sorted(path.glob("params_*.npz")) if path.is_dir() else []
+            files = [p for root in (path, path / "params") for p in sorted(root.glob("params_*.npz"))]
         else:
-            files = [path / "af3.bin"] if path.is_dir() else [path]
+            files = sorted(path.glob("*.bin*")) if path.is_dir() else [path]
+            files = [p for p in files if re.fullmatch(r".+\.bin(?:\.zst)?(?:\.[0-9]+)?", p.name)]
         valid = [p for p in files if p.is_file() and p.stat().st_size > 0]
         check("weight_files", bool(valid), files=[{"name": p.name, "bytes": p.stat().st_size}
                                                  for p in valid],

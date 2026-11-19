@@ -20,21 +20,29 @@ class Stage:
     end: dict = field(default_factory=dict)
 
     def __post_init__(self):
-        if not self.name or not isinstance(self.steps, int) or self.steps < 1:
+        if not self.name or type(self.steps) is not int or self.steps < 1:
             raise ValueError("A stage needs a name and positive integer steps")
         if not np.isfinite(self.learning_rate) or self.learning_rate <= 0:
             raise ValueError("learning_rate must be finite and positive")
-        if not self.end.keys() <= self.controls.keys():
+        for mapping in (self.controls, self.end):
+            if "learning_rate" in mapping:
+                rate = mapping["learning_rate"]
+                if not np.isscalar(rate) or not np.isfinite(rate) or rate <= 0:
+                    raise ValueError("learning_rate endpoints must be finite and positive")
+        if not self.end.keys() <= self.controls.keys() | {"learning_rate"}:
             raise ValueError("Every ramp endpoint needs a starting control value")
 
     def at(self, index):
         if not 0 <= index < self.steps:
             raise IndexError(index)
         fraction = index / max(self.steps - 1, 1)
-        controls = dict(self.controls)
+        controls = {"learning_rate": self.learning_rate, **self.controls}
         for key, value in self.end.items():
-            controls[key] = controls[key] + fraction * (value - controls[key])
-        return {**controls, "learning_rate": self.learning_rate}
+            if fraction == 1:
+                controls[key] = value
+            elif fraction > 0:
+                controls[key] = (1 - fraction) * controls[key] + fraction * value
+        return controls
 
 
 @dataclass
@@ -121,18 +129,54 @@ def gradient_step(state, backend, controls, key, *, optimizer="adam", clip_norm=
                       state.logits.copy(), saved, dict(state.extra))
 
 
+def _step_identity(function):
+    """Identify the implementation and serializable bound arguments at run creation."""
+    from functools import partial
+    import inspect
+
+    def argument(value):
+        if isinstance(value, np.ndarray) and not value.dtype.hasobject:
+            return {"dtype": str(value.dtype), "shape": list(value.shape),
+                    "sha256": hashlib.sha256(value.tobytes()).hexdigest()}
+        try:
+            json.dumps(value, allow_nan=False)
+        except (TypeError, ValueError, OverflowError):
+            # Arbitrary external state still belongs in the caller's problem_id.
+            return {"caller_owned_type": type(value).__qualname__}
+        return value
+
+    if isinstance(function, partial):
+        def bound(value):
+            return _step_identity(value) if callable(value) else argument(value)
+        return {"partial": _step_identity(function.func),
+                "args": [bound(x) for x in function.args],
+                "kwargs": {k: bound(v) for k, v in function.keywords.items()}}
+    impl = function if inspect.isroutine(function) else type(function).__call__
+    try:
+        source = inspect.getsource(impl)
+    except (OSError, TypeError):
+        source = None
+    cells = getattr(impl, "__closure__", None) or ()
+    return {"module": getattr(impl, "__module__", None), "name": impl.__qualname__,
+            "source_sha256": hashlib.sha256(source.encode()).hexdigest() if source else None,
+            "defaults": [argument(x) for x in (getattr(impl, "__defaults__", None) or ())],
+            "kwdefaults": {k: argument(v) for k, v in (getattr(impl, "__kwdefaults__", None) or {}).items()},
+            "closure": [argument(cell.cell_contents) for cell in cells]}
+
+
 class Run:
     """Deterministic seed-per-step execution, atomic checkpoints, caller hooks.
 
     A problem_id must change if the objective, input, parameters, or algorithm
     changes. Backend metadata and the complete schedule are additionally checked
-    on resume. Hooks run after a committed step; returning False stops cleanly.
+    on resume, including initial logits and the step implementation. Capture
+    custom closure / object state and external dependencies in problem_id. Hooks run after a committed step; returning False stops cleanly.
     """
     def __init__(self, backend, logits, stages, *, problem_id, seed=0,
                  step_fn=gradient_step, observers=(), output=None):
         if not isinstance(problem_id, str) or not problem_id:
             raise ValueError("Provide a nonempty problem_id for checkpoint compatibility")
-        if not isinstance(seed, int) or not 0 <= seed < 2**32:
+        if type(seed) is not int or not 0 <= seed < 2**32:
             raise ValueError("seed must be a uint32 integer")
         logits = np.asarray(logits, np.float32)
         if logits.shape != (backend.design_length, 20) or not np.isfinite(logits).all():
@@ -151,11 +195,14 @@ class Run:
         self.output = Path(output) if output else None
         self._restored = False
         from .provenance import source_tree_fingerprint
-        self.manifest = {"format": 2, "tool_version": __version__,
+        self.manifest = {"format": 3, "tool_version": __version__,
                          "tool_source": source_tree_fingerprint(Path(__file__).parent),
                          "host_numerics": {"numpy": np.__version__,
                                            "gradient_step": "float32_design_float64_moments"},
                          "problem_id": problem_id, "seed": seed,
+                         "initial_logits_sha256": hashlib.sha256(logits.tobytes()).hexdigest(),
+                         "step": ({k: _step_identity(v) for k, v in step_fn.items()}
+                                  if isinstance(step_fn, dict) else _step_identity(step_fn)),
                          "backend": backend.metadata, "stages": [asdict(s) for s in self.stages]}
         encoded = json.dumps(self.manifest, sort_keys=True, allow_nan=False).encode()
         self.manifest = json.loads(encoded)  # Normalize tuples identically to persisted JSON.
@@ -238,17 +285,18 @@ class Run:
         report = {"status": "numerical_failure", "step": self.state.step,
                   "key": key.tolist(), "controls": controls, "fingerprint": self.fingerprint,
                   "error": str(error), "audit": error.report}
-        (folder / "report.json").write_text(json.dumps(report, indent=2, allow_nan=False,
+        from .checkpoint import atomic_text
+        atomic_text(folder / "report.json", json.dumps(report, indent=2, allow_nan=False,
                                                        default=serialize) + "\n")
         error.evidence_directory = str(folder)
 
     def run(self, *, max_steps=None, max_seconds=None, checkpoint_every=1):
         """Time bound checked between evaluations, never interrupts a device kernel."""
-        if max_steps is not None and (not isinstance(max_steps, int) or max_steps < 0):
+        if max_steps is not None and (type(max_steps) is not int or max_steps < 0):
             raise ValueError("max_steps must be a nonnegative integer")
         if max_seconds is not None and (not np.isfinite(max_seconds) or max_seconds < 0):
             raise ValueError("max_seconds must be nonnegative and finite")
-        if not isinstance(checkpoint_every, int) or checkpoint_every < 1:
+        if type(checkpoint_every) is not int or checkpoint_every < 1:
             raise ValueError("checkpoint_every must be positive")
         if self.output and self.state.step == 0 and not self._restored:
             trajectory = self.output / "trajectory.jsonl"
@@ -318,8 +366,10 @@ class Run:
                        "best_evaluated_loss": self.state.best_loss,
                        **self._sequence_fields("best_evaluated", self.state.best_logits,
                                                self.state.best_controls),
-                       "best_comparison": "Raw objectives; only comparable under unchanged controls"}
-            (self.output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+                       "best_comparison": "Lowest evaluated objective under its recorded controls. "
+                                          "A decoded hard sequence needs its own hard evaluation."}
+            from .checkpoint import atomic_text
+            atomic_text(self.output / "summary.json", json.dumps(summary, indent=2) + "\n")
         return self.state
 
     def save(self, path):
@@ -338,9 +388,16 @@ class Run:
         state = State(**saved["state"])
         if not isinstance(state.logits, np.ndarray) or state.logits.shape != (self.backend.design_length, 20):
             raise ValueError("Checkpoint sequence dimensions differ")
-        if not 0 <= state.step <= self.total_steps:
+        if type(state.step) is not int or not 0 <= state.step <= self.total_steps:
             raise ValueError("Checkpoint step outside schedule")
-        if not np.isfinite(state.logits).all():
+        if ((state.best_loss is None) != (state.best_logits is None)
+                or state.best_loss is not None and (
+                    type(state.best_loss) not in (float, int) or not np.isfinite(state.best_loss)
+                    or not isinstance(state.best_logits, np.ndarray)
+                    or state.best_logits.shape != state.logits.shape
+                    or state.best_logits.dtype != np.float32 or not np.isfinite(state.best_logits).all())):
+            raise ValueError("Invalid checkpoint best score or logits")
+        if state.logits.dtype != np.float32 or not np.isfinite(state.logits).all():
             raise ValueError("Checkpoint contains nonfinite logits")
         # A trajectory may contain steps beyond the last atomic checkpoint.
         if self.output and (self.output / "trajectory.jsonl").exists():
@@ -356,10 +413,16 @@ class Run:
                     if index != len(lines) - 1:
                         raise ValueError("Malformed trajectory before its final interrupted record")
 
+            # Restoring into a new directory may legitimately begin a log at a
+            # nonzero step. Once begun, the log must be ordered and contiguous.
+            previous = None
             for row in rows:
                 if (not isinstance(row, dict) or type(row.get("step")) is not int
-                        or row["step"] < 0):
+                        or row["step"] < 0 or previous is not None and row["step"] != previous + 1):
                     raise ValueError("Invalid trajectory step record")
+                previous = row["step"]
+            if previous is not None and previous < state.step - 1:
+                raise ValueError("Trajectory ends before the checkpoint")
             from .checkpoint import atomic_text
             atomic_text(path, "".join(json.dumps(r) + "\n" for r in rows
                                       if r["step"] < state.step))

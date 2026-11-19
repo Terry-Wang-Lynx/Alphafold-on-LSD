@@ -39,7 +39,7 @@ def test_checkpoint_roundtrip_without_pickle(tmp_path):
     np.testing.assert_array_equal(load(path)["data"], tree["data"])
 
 
-@pytest.mark.parametrize("case", ["missing_manifest", "missing_array", "bad_manifest", "npy", "not_run"])
+@pytest.mark.parametrize("case", ["missing_manifest", "missing_array", "bad_manifest", "npy", "truncated_zip", "not_run"])
 def test_cli_rejects_malformed_checkpoint_without_traceback(tmp_path, case):
     path = tmp_path / "invalid.npz"
     if case == "missing_manifest":
@@ -48,6 +48,8 @@ def test_cli_rejects_malformed_checkpoint_without_traceback(tmp_path, case):
         np.savez(path, manifest=json.dumps({"x": {"__array__": "absent"}}))
     elif case == "bad_manifest":
         np.savez(path, manifest=np.zeros(2))
+    elif case == "truncated_zip":
+        path.write_bytes(b"PK\x03\x04truncated")
     elif case == "npy":
         with path.open("wb") as handle:
             np.save(handle, np.zeros(1))
