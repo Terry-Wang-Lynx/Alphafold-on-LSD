@@ -50,15 +50,12 @@ def test_artificial_af3_input_identity_and_no_overwrite(monkeypatch, tmp_path):
     assert (output / "input.json").read_bytes() == before
 
 
-@pytest.mark.parametrize("backend_name,atom_mode", [("af2", None), ("af3", "hard"), ("af3", "soft")])
-def test_model_factory_uses_configured_stages_without_runtime(monkeypatch, tmp_path, backend_name, atom_mode):
+@pytest.mark.parametrize("backend_name", ["af2", "af3"])
+def test_model_factory_uses_configured_stages_without_runtime(monkeypatch, tmp_path, backend_name):
     module = load_example(backend_name, monkeypatch)
 
     class FakeBackend:
         def __init__(self, **kwargs):
-            assert kwargs.get("atom_mode") == atom_mode
-            if atom_mode == "soft":
-                assert kwargs["soft_atom_alphabets"] == ["AG"]
             self.design_length = 16
             self.metadata = {"backend": "synthetic_configuration_test"}
 
@@ -70,15 +67,6 @@ def test_model_factory_uses_configured_stages_without_runtime(monkeypatch, tmp_p
         config.update(input_json=str(tmp_path / "input/input.json"),
                       pair_mask=str(tmp_path / "input/pair_mask.npy"),
                       model_dir=str(tmp_path), design_chain="A")
-    if atom_mode == "soft":
-        config.update(atom_mode="soft", design_positions=[3], soft_atom_alphabets=["AG"])
     run = module.build(config)
     assert run.total_steps == 6
-    if atom_mode == "soft":
-        stage, = run.stages
-        assert stage.name == "soft"
-        assert stage.at(0)["temperature"] == 1.
-        assert stage.at(5)["temperature"] == pytest.approx(.05)
-        assert all(stage.at(i)["hard"] == 0 and stage.at(i)["soft"] == 1 for i in range(stage.steps))
-    else:
-        assert [s.name for s in run.stages] == ["logits", "soft", "hard"]
+    assert [s.name for s in run.stages] == ["logits", "soft", "hard"]

@@ -37,13 +37,12 @@ class DesignEvoformer(evoformer_network.Evoformer):
     """
 
     def __init__(self, config, global_config, remat_cfg, pseudo_full,
-                 design_mask, soft_msa_query=True, name='evoformer', *, query_only=False):
+                 design_mask, soft_msa_query=True, name='evoformer'):
         super().__init__(config, global_config, name=name)
         self._remat_cfg = remat_cfg
         self._pseudo_full = pseudo_full
         self._design_mask = design_mask
         self._soft_msa_query = soft_msa_query
-        self._query_only = query_only
 
     @hk.transparent
     def _embed_process_msa(self, msa_batch, pair_activations, pair_mask, key,
@@ -63,7 +62,7 @@ class DesignEvoformer(evoformer_network.Evoformer):
             logits = (jnp.clip(jnp.sum(msa_batch.mask, axis=-1), 0.0, 1.0) - 1.0) * 1e6
             index_order = featurization.gumbel_argsort_sample_idx(sample_key, logits)
             msa_feat = featmod.create_msa_feat_with_soft_query(
-                msa_batch, self._pseudo_full, self._design_mask, query_only=self._query_only)
+                msa_batch, self._pseudo_full, self._design_mask)
             msa_batch = msa_batch.index_msa_rows(index_order)
             msa_feat = msa_feat[index_order]
             indices = jnp.arange(self.config.num_msa)

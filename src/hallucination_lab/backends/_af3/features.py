@@ -29,7 +29,7 @@ def inject_soft_sequence(aatype_one_hot: jnp.ndarray, profile: jnp.ndarray,
 
 
 def create_msa_feat_with_soft_query(msa, pseudo_seq: jnp.ndarray,
-                                    design_mask: jnp.ndarray, *, query_only=False) -> jnp.ndarray:
+                                    design_mask: jnp.ndarray) -> jnp.ndarray:
     """Create AF3 MSA features while soft-replacing the query row.
 
     This is the AF3 equivalent of the ColabDesign update_seq() write:
@@ -54,8 +54,7 @@ def create_msa_feat_with_soft_query(msa, pseudo_seq: jnp.ndarray,
     msa_1hot = jax.nn.one_hot(msa.rows, msa_width)
 
     soft_query = jnp.pad(pseudo_seq, ((0, 0), (0, 1)))
-    row_mask = (jnp.asarray(msa.mask, bool)[..., None] if query_only else
-                (jnp.arange(msa_1hot.shape[0]) == 0)[:, None, None])
+    row_mask = (jnp.arange(msa_1hot.shape[0]) == 0)[:, None, None]
     pos_mask = design_mask[None, :, None]
     m = (row_mask & pos_mask).astype(msa_1hot.dtype)
     msa_1hot = msa_1hot * (1 - m) + soft_query[None, :, :] * m
@@ -74,15 +73,3 @@ def recycle_embeddings(body, initial, key, recycles, *, detach):
             state = jax.tree_util.tree_map(jax.lax.stop_gradient, state)
         state, key = body(state, key)
     return state
-
-
-def native_r0_embeddings(body, initial, key):
-    """Match release 3.0.3's single-pass Haiku boundary in Soft Atom mode."""
-    import haiku as hk
-
-    def recycle_body(_, args):
-        return body(*args)
-
-    if hk.running_init():
-        return body(initial, key)[0]
-    return hk.fori_loop(0, 1, recycle_body, (initial, key))[0]

@@ -13,8 +13,6 @@ The AF3 Evoformer adapter derives from AlphaFold 3 (Google DeepMind,
 Apache-2.0), source b2f3d45fbfcacc5183bd5345d15df93571b8437f.
 https://github.com/google-deepmind/alphafold3
 Its parameter names and module structure are retained for compatibility.
-The optional Soft Atom encoder adapts AF3 3.0.3 reference-atom attention
-with probability-weighted native layouts and the original parameter names.
 
 Sequence relaxation and the optional AF2 backend use ColabDesign semantics.
 ColabDesign, Sergey Ovchinnikov and contributors:
