@@ -158,12 +158,13 @@ class AF3:
         if not flags.FLAGS.is_parsed():
             flags.FLAGS(["hallucination-lab"], known_only=True)
         from ._af3.hybrid import HybridDesignTrunk, HybridFullGate
-        if not isinstance(bucket, int) or bucket < 1:
+        if type(bucket) is not int or bucket < 1:
             raise ValueError("bucket must be positive")
-        if not isinstance(recycles, int) or recycles < 0:
+        if type(recycles) is not int or recycles < 0:
             raise ValueError("recycles must be a nonnegative integer")
         self.input_path = Path(input_json).resolve()
-        self.input_data = json.loads(self.input_path.read_text())
+        raw_input = self.input_path.read_bytes()
+        self.input_data = json.loads(raw_input.decode("utf-8"))
         self.chain = design_chain
         proteins = [entry["protein"] for entry in self.input_data["sequences"] if "protein" in entry]
         matches = [p for p in proteins if p["id"] == design_chain or p["id"] == [design_chain]]
@@ -288,7 +289,7 @@ class AF3:
                          "ref_max_modified_date": _REFERENCE_CUTOFF.isoformat(),
                          "backend": "af3", "jax": jax.__version__, "bucket": bucket,
                          "recycles": recycles, "recycle_gradient": "last", "remat": remat,
-                         "input_sha256": hashlib.sha256(self.input_path.read_bytes()).hexdigest(),
+                         "input_sha256": hashlib.sha256(raw_input).hexdigest(),
                          "sequence": self.sequence, "design_chain": design_chain,
                          "design_positions": positions.tolist(), "design_tokens": self.token_indices.tolist(),
                          "token_chain_ids": self.token_chain_ids.tolist(),

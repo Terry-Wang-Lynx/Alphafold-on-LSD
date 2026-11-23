@@ -20,6 +20,10 @@ dev = ["pytest>=8", "build>=1.2", "ruff>=0.9", "twine>=6"]
 [project.scripts]
 hallulab = "hallucination_lab.cli:main"
 
+[project.urls]
+Homepage = "https://github.com/Terry-Wang-Lynx/Alphafold-on-LSD"
+Repository = "https://github.com/Terry-Wang-Lynx/Alphafold-on-LSD"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

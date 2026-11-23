@@ -249,7 +249,7 @@ class AF2:
                          "runtime_source": source_tree_fingerprint(Path(colabdesign.__file__).parent),
                          "runtime_model_source_sha256": sha256_file(getfile(type(model))),
                          "weight_sha256": weight_hashes[names[0]] if len(names) == 1 else None,
-                         "model_names": names, "weight_sha256_by_model": weight_hashes,"backend": "af2", "colabdesign": version("colabdesign"),
+                         "model_names": names, "weight_sha256_by_model": weight_hashes, "backend": "af2", "colabdesign": version("colabdesign"),
                          "jax": jax.__version__, "model": names[0] if len(names) == 1 else None, "protocol": protocol,
                          "sequence": sequence, "design_positions": positions.tolist(),
                          "design_tokens": (positions + target_length).tolist(),

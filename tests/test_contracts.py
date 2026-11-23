@@ -73,6 +73,23 @@ def test_controls_fail_before_compute(quadratic, key):
         quadratic.evaluate(initial_logits(3), key)
 
 
+@pytest.mark.parametrize("kwargs", [{"length": True}, {"length": 2, "scale": True},
+                                    {"length": True, "sequence": "A"}])
+def test_initial_logits_rejects_booleans(kwargs):
+    with pytest.raises(ValueError):
+        initial_logits(**kwargs)
+
+
+@pytest.mark.parametrize("controls", [
+    {"temperature": True}, {"alpha": True}, {"soft": True}, {"hard": False},
+    {"dropout": 1}, {"temperature": "1.0"},
+])
+def test_validate_controls_rejects_invalid_types(controls):
+    from hallucination_lab.sequence import validate_controls
+    with pytest.raises(ValueError):
+        validate_controls(controls)
+
+
 def test_prediction_export_roundtrip(prediction, tmp_path):
     from hallucination_lab.io import save_prediction
     path = tmp_path / "prediction.npz"

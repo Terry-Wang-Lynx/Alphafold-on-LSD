@@ -291,5 +291,11 @@ def test_jitted_hard_and_training_frontdoors_use_distinct_features(monkeypatch, 
         np.testing.assert_array_equal(hard["observed"], np.eye(31)[[0, 1]])
         np.testing.assert_allclose(hard["actual_profile"], 1 / 31)
         np.testing.assert_array_equal(hard["diffusion_operand"], key)
+        with pytest.raises(ValueError, match="bucket"):
+            AF3(input_json=input_json, design_chain="A", model_dir=tmp_path, bucket=True,
+                objective=lambda p, c: p.sequence[0, 0])
+        with pytest.raises(ValueError, match="recycles"):
+            AF3(input_json=input_json, design_chain="A", model_dir=tmp_path, bucket=2,
+                recycles=True, objective=lambda p, c: p.sequence[0, 0])
     finally:
         model.close()

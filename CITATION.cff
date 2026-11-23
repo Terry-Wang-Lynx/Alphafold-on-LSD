@@ -3,6 +3,8 @@ message: "Please cite the software version you use and its upstream models."
 title: "AlphaFold on LSD"
 type: software
 authors:
-  - name: "AlphaFold on LSD contributors"
+  - family-names: "Wang"
+    given-names: "Tianyi"
 version: "0.3.0rc3"
 license: Apache-2.0
+repository-code: "https://github.com/Terry-Wang-Lynx/Alphafold-on-LSD"
