@@ -4,7 +4,7 @@
 
 本页为中文版主页；安装、使用、API、数值计算等详细文档目前为英文。
 
-AlphaFold on LSD · `0.3.0rc3` · 候选发布版  
+Hallucination Lab · `0.3.0rc3` · 候选发布版  
 发行包名：`hallucination-lab` · Python 导入包：`hallucination_lab` · 命令行工具：`hallulab`
 
 # 可自定义的蛋白质 hallucination。

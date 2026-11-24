@@ -2,7 +2,7 @@
 
 Offline HTML documentation (`docs/`, open locally in a browser): [Overview](docs/index.html) · [Install](docs/install.html) · [Use](docs/guide.html) · [API](docs/api.html) · [Numerics](docs/numerics.html) · [Migration](docs/migration.html) · [Attribution](docs/provenance.html) · [Contribute](docs/contributing.html)
 
-AlphaFold on LSD · `0.3.0rc3` · Release candidate  
+Hallucination Lab · `0.3.0rc3` · Release candidate  
 Distribution: `hallucination-lab` · Python package: `hallucination_lab` · CLI: `hallulab`
 
 # Protein hallucination, open to customization.

@@ -1,10 +1,10 @@
 cff-version: 1.2.0
 message: "Please cite the software version you use and its upstream models."
-title: "AlphaFold on LSD"
+title: "Hallucination Lab"
 type: software
 authors:
   - family-names: "Wang"
     given-names: "Tianyi"
 version: "0.3.0rc3"
 license: Apache-2.0
-repository-code: "https://github.com/Terry-Wang-Lynx/Alphafold-on-LSD"
+repository-code: "https://github.com/Terry-Wang-Lynx/hallucination-lab"
