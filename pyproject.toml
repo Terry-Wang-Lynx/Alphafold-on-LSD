@@ -21,8 +21,8 @@ dev = ["pytest>=8", "build>=1.2", "ruff>=0.9", "twine>=6"]
 hallulab = "hallucination_lab.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/Terry-Wang-Lynx/hallucination-lab"
-Repository = "https://github.com/Terry-Wang-Lynx/hallucination-lab"
+Homepage = "https://github.com/Terry-Wang-Lynx/Hallucination-Lab"
+Repository = "https://github.com/Terry-Wang-Lynx/Hallucination-Lab"
 
 [tool.setuptools.packages.find]
 where = ["src"]
